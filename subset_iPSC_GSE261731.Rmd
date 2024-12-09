@@ -1,0 +1,299 @@
+---
+title: "Zahra_DCdataset"
+output: html_document
+date: '2024-05-29'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document, describing the data processing of the RNA-seq data from GEO accession Series GSE261731.
+
+
+```{r}
+library(limma)
+library(edgeR)
+library(reshape2)
+library(ggplot2)
+library("clusterProfiler")
+library(RColorBrewer)
+library(pheatmap)
+library("GEOquery")
+library(RColorBrewer)
+library(org.Hs.eg.db)
+
+```
+
+
+
+```{r}
+## download raw counts from gene expression dataset and metadata from GEO repository of "GSE261731" 
+
+DC_dataset <-load.csv('GSE261731_raw_counts.csv')
+
+DC_annotation<- read.csv('GSE261731_metadata.csv')
+
+##Mapping Ensemble ID to genes ID using the 37th version of the human genome reference (GRCH37)
+genes<-read.csv('ch37_mapping.csv')
+
+rownames(DC_annotation) <- DC_annotation$sample_id
+
+```
+
+
+
+```{r}
+#tidying the genes ID table
+genes<-genes[!duplicated(genes$Gene.stable.ID),]
+genes<-genes[!duplicated(genes$Gene.name),]
+rownames(genes)<-genes$Gene.name
+
+```
+
+
+```{r}
+#extracting iPSC samples (samples 9 to 18) and filtering low expressed genes
+celltype_group<- DC_annotation$group1[9:18]
+ipsc_type<- DC_annotation$group2[9:18]
+batch<-DC_annotation$group3[9:18]
+ipsc_count<- DC_counts[,9:18]
+design_filter <- model.matrix(~celltype_group + ipsc_type+batch)
+
+keep_exprs <- filterByExpr(ipsc_count, design =design_filter )
+ipsc_count <- ipsc_count[keep_exprs=="TRUE",]
+
+```
+
+
+```{r}
+#boxplot and density plot of raw data
+
+lcpm <- cpm(ipsc_count, log=TRUE)
+
+boxplot(lcpm, las=2,, main="")
+title(main="Unnormalised data", ylab="Log-cpm")
+plot(density(lcpm))
+
+```
+
+
+```{r}
+#Raw counts: MDS plot of iPSC samples indicating the celltype, batch and cell line groups
+
+par(mfrow=c(2,2))
+col.group <- as.factor(celltype_group)
+levels(col.group) <- brewer.pal(nlevels(col.group), "Set1")
+col.group <- as.character(col.group)
+col.batch <- as.factor(batch)
+levels(col.batch) <- brewer.pal(nlevels(col.batch), "Set2")
+col.batch <- as.character(col.batch)
+col.ipsc <- as.factor(ipsc_type)
+levels(col.ipsc) <- brewer.pal(nlevels(col.ipsc), "Set2")
+col.ipsc <- as.character(col.ipsc)
+
+plotMDS(lcpm, labels=celltype_group, col=col.group,dim=c(1,2))
+title(main="iPSC-DC Celltype groups")
+
+plotMDS(lcpm, labels=batch, col=col.batch, dim=c(1,2))
+title(main="Sequencing batches")
+
+
+plotMDS(lcpm, labels=ipsc_type, col=col.ipsc, dim=c(1,2))
+title(main="iPSC cell line")
+
+```
+
+
+
+
+```{r}
+## analysis of batch removal and normalization
+design_matrix <- model.matrix(~celltype_group)
+
+DC_counts_norm <- removeBatchEffect(lcpm,batch = batch, batch2 = ipsc_type, design = design_matrix)
+
+
+```
+
+
+```{r}
+#Normalized data: MDS plots displysing the clustering due to cell type, batch or cell line
+
+par(mfrow=c(2,2))
+col.group <- as.factor(celltype_group)
+levels(col.group) <- brewer.pal(nlevels(col.group), "Set1")
+col.group <- as.character(col.group)
+col.batch <- as.factor(batch)
+levels(col.batch) <- brewer.pal(nlevels(col.batch), "Set2")
+col.batch <- as.character(col.batch)
+col.ipsc <- as.factor(ipsc_type)
+levels(col.ipsc) <- brewer.pal(nlevels(col.ipsc), "Set2")
+col.ipsc <- as.character(col.ipsc)
+sample_number <- DC_annotation$sample_number
+
+plotMDS(DC_counts_norm, labels=celltype_group, col=col.group,dim=c(1,2))
+title(main="iPSC-derived DC, subset")
+
+plotMDS(DC_counts_norm, labels=batch, col=col.batch, dim=c(1,2))
+title(main="Normalized: Batche")
+
+
+plotMDS(DC_counts_norm, labels=ipsc_type, col=col.ipsc, dim=c(1,2))
+title(main="Normalized: Cell line")
+
+
+```
+
+
+```{r}
+# DE analysis: set up the contrast matrix for mixed linear model 
+design_matrix1<- model.matrix(~0+celltype_group)
+colnames(design_matrix1) <- gsub("group", "", colnames(design_matrix1))
+design_matrix1
+
+contr.matrix <- makeContrasts(
+DC1vsDC2A = celltype_DC1-celltype_DC2A,
+DC1vsDC2B = celltype_DC1 - celltype_DC2B,
+DC2AvsDC2B = celltype_DC2A - celltype_DC2B,
+levels = colnames(design_matrix1))
+contr.matrix
+```
+
+
+```{r}
+#DE analysis: fitting linear model
+fit <- lmFit(DC_counts_norm,design_matrix1)
+fit <- contrasts.fit(fit, contr.matrix)
+fit <- eBayes(fit)
+dt <- decideTests(fit)
+summary(dt)
+```
+
+```{r}
+#extracting DE genes DC1 vs DC2
+
+de.DC1 <- which(dt[,1]==1 & dt[,3]!=1)
+de_upreg_genes1 <- genes[which(genes$Gene.stable.ID %in% rownames(DC_counts_norm) [de.DC1]),]
+
+
+# cluster profle DC1 vs DC2
+
+# Perform GO enrichment analysis
+go_enrichment <- enrichGO(
+  gene          = rownames(de_upreg_genes1),
+  OrgDb         = org.Hs.eg.db,  # Replace with the appropriate annotation package
+  keyType       = "SYMBOL",
+  ont           = "BP",
+  pAdjustMethod = "BH",
+  qvalueCutoff  = 0.05
+)
+
+dataframe<- go_enrichment@result
+dataframe<-dataframe[
+  order( dataframe$Count,decreasing =TRUE ),
+]
+```
+
+
+```{r}
+#extracting DE genes DC2A vs DC2B
+
+de.DC2 <- which(dt[,3]==1)
+de_upreg_genes2 <- genes[which(genes$Gene.stable.ID %in% rownames(DC_counts_norm) [de.DC2]),]
+
+
+# clusterprofle DC1 vs DC2
+
+# Perform GO enrichment analysis
+go_enrichment2 <- enrichGO(
+  gene          = rownames(de_upreg_genes2),
+  OrgDb         = org.Hs.eg.db,  # Replace with the appropriate annotation package
+  keyType       = "SYMBOL",
+  ont           = "BP",
+  pAdjustMethod = "BH",
+  qvalueCutoff  = 0.05
+)
+
+dataframe2<- go_enrichment2@result
+dataframe2<-dataframe2[
+  order( dataframe2$Count,decreasing =TRUE ),
+]
+
+```
+
+
+```{r}
+#DE genes for DC1
+results_table <- topTable(fit,coef="DC1vsDC2A",number = Inf)
+results_table$symbol<- 
+DC1_up <- rownames(results_table)[which(results_table$logFC>=1 & results_table$adj.P.Val<=0.05)]
+DC1_up <- genes$Gene.name[which(genes$Gene.stable.ID %in% DC1_up)]
+
+```
+
+
+```{r}
+#DE genes for DC1 vs DC2B
+results_table <- topTable(fit,coef="DC1vsDC2B",lfc =1,number = 200)
+table2<- genes[, c(1,3)]
+row.names(table2)<-table2$Gene.stable.ID
+merge_tables <- merge(results_table, table2, by=0)
+#write.table(merge_tables, file='240211 ipDC1_de.tsv',sep = "\t",row.names = F)
+
+```
+
+
+```{r}
+#DE genes for DC2A vs DC2B
+results_tableDC2 <- topTable(fit,coef="DC2AvsDC2B",lfc =1,number = 200)
+results_tableDC2 <- merge(results_tableDC2,table2, by=0)
+
+```
+
+```{r}
+#generating heatmap data for DC1_known_specific_genes
+heatmap_palette <- colorRampPalette(c("blue", "white", "red"))(100)
+heatmap_genes_id <- c('IRF8','CLEC9A','CADM1','TLR3','IRF4','CD1E','FCER1A','FCER2','CD14','S100A9','CD109','CD163','CD28')
+heatmap_genes <- genes[heatmap_genes_id,"Gene.stable.ID"]
+
+groups_order <- order(celltype_group)
+heatmap_counts <- DC_counts_norm[heatmap_genes,groups_order]
+rownames(heatmap_counts) <- heatmap_genes_id
+```
+
+
+```{r}
+#library(pheatmap)
+anno_col<- data.frame(ColumnGroups = celltype_group[groups_order])
+row.names(anno_col) <- colnames(heatmap_counts)
+
+pheatmap(heatmap_counts,cluster_cols = FALSE,scale="row",cluster_rows = F,show_colnames = F,cutree_cols = 2,annotation_row_names_side="left", gaps_col = c(2,6),gaps_row = c(4,8))
+             
+```
+
+
+
+```{r}
+require(gridExtra)
+DC_melted <- melt(DC_counts_norm)
+ipsc_naming<- DC_annotation$naming [9:18]
+ipsc_group<- DC_annotation$sample_type[9:18]
+
+
+#boxplot for significant genes DC1
+genes_count <- DC_melted[which(DC_melted$Var1=="ENSG00000164342"),]
+
+ggplot(genes_count,aes(x=celltype_group,y=value,color=celltype_group))+geom_point(position=position_jitter(h=0.1,w=0.1),size=3)+
+  theme(legend.position="bottom")+
+  labs(x="",y="TLR3 (logCPM)")
+  
+```
+
+
+
+
+
+

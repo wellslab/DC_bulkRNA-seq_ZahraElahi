@@ -1,0 +1,148 @@
+---
+title: "Zahra_DCdataset_CB"
+output: html_document
+date: '2024-06-28'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document, describing the data processing of the RNA-seq data from GEO accession Series GSE261731.
+
+
+```{r}
+library(limma)
+library(edgeR)
+library(reshape2)
+library(ggplot2)
+library("clusterProfiler")
+library(RColorBrewer)
+library(pheatmap)
+library("GEOquery")
+library(RColorBrewer)
+library(org.Hs.eg.db)
+
+```
+
+
+
+```{r}
+## download raw counts from gene expression dataset and metadata from GEO repository of "GSE261731" 
+
+DC_dataset <-load.csv('GSE261731_raw_counts.csv')
+
+DC_annotation<- read.csv('GSE261731_metadata.csv')
+
+##Mapping Ensemble ID to genes ID using the 37th version of the human genome reference (GRCH37)
+genes<-read.csv('ch37_mapping.csv')
+
+rownames(DC_annotation) <- DC_annotation$sample_id
+
+```
+
+
+
+```{r}
+#tidying gene names and removing duplicated items
+genes<-genes[!duplicated(genes$Gene.stable.ID),]
+genes<-genes[!duplicated(genes$Gene.name),]
+rownames(genes)<-genes$Gene.name
+```
+
+
+```{r}
+
+#extracting Cord blood_derived DC samples (samples 1 to 8) and filtering low expressed genes
+celltype_group<- DC_annotation$group1[1:8]
+cb_type<- DC_annotation$group2[1:8]
+batch<-DC_annotation$group3[1:8]
+cb_count<- DC_counts[,1:8]
+design_filter <- model.matrix(~celltype_group + cb_type+batch)
+
+keep_exprs <- filterByExpr(cb_count, design =design_filter )
+cb_count <- cb_count[keep_exprs=="TRUE",]
+
+```
+
+```{r}
+#boxplot and density plot of raw data
+lcpm <- cpm(cb_count, log=TRUE)
+
+boxplot(lcpm, las=2,, main="")
+title(main="Unnormalised data", ylab="Log-cpm")
+plot(density(lcpm))
+
+```
+
+
+```{r}
+#MDS plot CB samples
+
+par(mfrow=c(2,2))
+col.group <- as.factor(celltype_group)
+levels(col.group) <- brewer.pal(nlevels(col.group), "Set1")
+col.group <- as.character(col.group)
+col.batch <- as.factor(batch)
+levels(col.batch) <- brewer.pal(nlevels(col.batch), "Set2")
+col.batch <- as.character(col.batch)
+col.donor <- as.factor(donor)
+levels(col.donor) <- brewer.pal(nlevels(col.donor), "Set2")
+col.donor <- as.character(col.donor)
+
+plotMDS(lcpm, labels=celltype_group, col=col.group,dim=c(1,2))
+title(main="A. Celltype groups")
+
+plotMDS(lcpm, labels=batch, col=col.batch, dim=c(1,2))
+title(main="B. Sequencing batches")
+
+plotMDS(lcpm, labels=donor, col=col.donor, dim=c(1,2))
+title(main="C. Donor group")
+```
+
+
+
+
+```{r}
+## Analysis of batch removal from data
+design_matrix <- model.matrix(~celltype_group)
+
+DC_counts_norm <- removeBatchEffect(lcpm, batch = batch ,design = design_matrix)
+
+
+```
+
+
+```{r}
+#MDS plots for normalized data 
+par(mfrow=c(2,2))
+col.group <- as.factor(celltype_group)
+levels(col.group) <- brewer.pal(nlevels(col.group), "Set1")
+col.group <- as.character(col.group)
+col.batch <- as.factor(batch)
+levels(col.batch) <- brewer.pal(nlevels(col.batch), "Set2")
+col.batch <- as.character(col.batch)
+col.donor <- as.factor(donor)
+levels(col.donor) <- brewer.pal(nlevels(col.donor), "Set2")
+col.donor <- as.character(col.donor)
+
+plotMDS(DC_counts_norm, labels=celltype_group, col=col.group,dim=c(1,2))
+title(main="A. Celltype groups")
+
+plotMDS(DC_counts_norm, labels=batch, col=col.batch, dim=c(1,2))
+title(main="B. Sequencing batches")
+
+
+plotMDS(DC_counts_norm, labels=donor, col=col.donor, dim=c(1,2))
+title(main="C. Donor group")
+
+```
+
+
+
+
+
+
+
